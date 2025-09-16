@@ -1,51 +1,48 @@
-# agent.py
-import argparse
-import subprocess
-import sys
-import pandas as pd
-import pdfplumber
-from pathlib import Path
 import importlib.util
+import pandas as pd
+from pathlib import Path
 
-ATTEMPTS = 3
-
-# --- parser writer ---
 def write_icici_parser():
-    code = '''import pandas as pd
-import pdfplumber
+    parser_code = '''import pdfplumber
+import pandas as pd
 
 def parse(pdf_path: str) -> pd.DataFrame:
     rows = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            table = page.extract_table()
-            if table:
-                for row in table[1:]:  # skip header
-                    rows.append(row)
-    # adjust schema according to icici_sample.csv
+            text = page.extract_text()
+            if not text:
+                continue
+            lines = text.split("\\n")
+            for line in lines:
+                # split by spaces (simplest approach, customize if needed)
+                row = line.split()
+                if len(row) < 6:
+                    row += [""] * (6 - len(row))
+                elif len(row) > 6:
+                    row = row[:6]
+                rows.append(row)
     df = pd.DataFrame(rows, columns=["Date","Narration","Ref No","Debit","Credit","Balance"])
     return df
 '''
-    path = Path("custom_parsers/icici_parser.py")
-    path.write_text(code)
-    print(f"✅ Wrote parser at {path}")
+    parser_file = Path("custom_parsers/icici_parser.py")
+    parser_file.write_text(parser_code)
+    print(f"✅ Wrote parser at {parser_file}")
 
-# --- tester ---
 def run_test(target: str) -> bool:
-    # Get the absolute path to the repo root
-    repo_root = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(repo_root, "data", target)
+    # define paths
+    repo_root = Path(__file__).parent
+    pdf_path = repo_root / "data" / target / f"{target}_sample.pdf"
+    csv_path = repo_root / "data" / target / f"{target}_sample.csv"
     
-    pdf_path = os.path.join(data_dir, f"{target}_sample.pdf")
-    csv_path = os.path.join(data_dir, f"{target}_sample.csv")
-    
-    # dynamically import parser
-    parser_path = os.path.join(repo_root, "custom_parsers", f"{target}_parser.py")
-    
+    # dynamic import
+    parser_path = repo_root / "custom_parsers" / f"{target}_parser.py"
     spec = importlib.util.spec_from_file_location(f"{target}_parser", parser_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-
+    
+    print("Looking for PDF at:", pdf_path)
+    
     df_pdf = mod.parse(str(pdf_path))
     df_csv = pd.read_csv(csv_path)
 
@@ -58,31 +55,24 @@ def run_test(target: str) -> bool:
         return True
     else:
         print("❌ Test failed! Parser output != CSV.")
+        # optional: print differences
+        print(df_pdf.compare(df_csv))
         return False
 
-# --- agent loop ---
 def main():
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, help="bank name e.g. icici")
+    parser.add_argument("--target", required=True, help="Bank name target")
     args = parser.parse_args()
-    target = args.target
+    target = args.target.lower()
 
-    for attempt in range(ATTEMPTS):
-        print(f"\nAttempt {attempt+1}/{ATTEMPTS} for {target}")
-        if target == "icici":
-            write_icici_parser()
-        else:
-            print(f"No generator for {target} yet. Extend agent.py.")
-            sys.exit(1)
-
-        if run_test(target):
-            print("✅ Success!")
-            return
-        else:
-            print("Retrying...")
-
-    print("⚠️ Failed after retries.")
+    print(f"Attempt 1/3 for {target}")
+    write_icici_parser()
+    success = run_test(target)
+    if success:
+        print("✅ Success!")
+    else:
+        print("❌ Failed!")
 
 if __name__ == "__main__":
     main()
-
