@@ -6,17 +6,22 @@ def test_parser():
     pdf_path = "data/icici/icici_sample.pdf"
     csv_path = "data/icici/icici_sample.csv"
 
-    # Load the ground truth CSV
-    expected_df = pd.read_csv(csv_path)
+    try:
+        # Load the ground truth CSV
+        expected_df = pd.read_csv(csv_path)
 
-    # Parse the PDF using the agent-generated parser
-    parsed_df = icici_parser.parse(pdf_path)
+        # Parse the PDF using the agent-generated parser
+        parsed_df = icici_parser.parse(pdf_path)
 
-    if parsed_df is not None and parsed_df.equals(expected_df):
-        print("Test Passed: The generated parser works correctly!")
-        return True
-    else:
-        print("Test Failed: The parsed DataFrame does not match the expected CSV.")
+        if parsed_df is not None and parsed_df.equals(expected_df):
+            print("Test Passed: The generated parser works correctly!")
+            return True
+        else:
+            print("Test Failed: The parsed DataFrame does not match the expected CSV.")
+            return False
+            
+    except Exception as e:
+        print(f"Test Failed with an exception: {e}")
         return False
 
 if __name__ == "__main__":
