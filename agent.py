@@ -32,12 +32,16 @@ def parse(pdf_path: str) -> pd.DataFrame:
 
 # --- tester ---
 def run_test(target: str) -> bool:
-    data_dir = Path("data") / target
-    pdf_path = data_dir / f"{target}_sample.pdf"
-    csv_path = data_dir / f"{target}_sample.csv"
-
+    # Get the absolute path to the repo root
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(repo_root, "data", target)
+    
+    pdf_path = os.path.join(data_dir, f"{target}_sample.pdf")
+    csv_path = os.path.join(data_dir, f"{target}_sample.csv")
+    
     # dynamically import parser
-    parser_path = Path("custom_parsers") / f"{target}_parser.py"
+    parser_path = os.path.join(repo_root, "custom_parsers", f"{target}_parser.py")
+    
     spec = importlib.util.spec_from_file_location(f"{target}_parser", parser_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
