@@ -1,27 +1,36 @@
 import os
 import shutil
 import subprocess
-from typing import TypedDict, Annotated, List
+import operator
+import pandas as pd
+import re
+import fitz # PyMuPDF
+from typing import TypedDict, Annotated, List, Union
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY") # Or use Gemini API key
 
-# Define the graph state
+# Check for both Groq and OpenAI API keys to provide flexibility
+if os.getenv("GROQ_API_KEY"):
+    from langchain_groq import ChatGroq
+    llm = ChatGroq(model="mixtral-8x7b-32768", temperature=0.0)
+elif os.getenv("OPENAI_API_KEY"):
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+else:
+    raise ValueError("No API key found. Please set either GROQ_API_KEY or OPENAI_API_KEY in your .env file.")
+
+# Define the graph state with a correct reducer for messages
 class AgentState(TypedDict):
-    messages: Annotated[List[HumanMessage], lambda x: x]
+    messages: Annotated[List[Union[HumanMessage, AIMessage, ToolMessage]], operator.add]
     code: str
     target: str
     attempts: int
 
-# Define the LLM
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
-
-# The agent's tools
+# Define the agent's tools
 def run_tests(target: str) -> str:
     """Runs the test script for the specified bank parser."""
     try:
@@ -40,6 +49,7 @@ def plan_generator(state: AgentState) -> dict:
     """
     Generates a plan for the coding agent.
     """
+    print("---PLANNING---")
     plan_prompt = f"""
     You are an expert coding agent tasked with writing a Python parser for a bank statement.
     The goal is to create a function `parse(pdf_path)` inside `custom_parsers/{state['target']}_parser.py`
@@ -66,6 +76,7 @@ def code_generator(state: AgentState) -> dict:
     """
     Generates the Python code for the parser based on the plan.
     """
+    print("---GENERATING CODE---")
     plan = state['messages'][-1].content
     code_prompt = f"""
     You are an expert Python programmer. Your task is to write the code for a bank statement parser
@@ -99,7 +110,7 @@ def execute_and_test(state: AgentState) -> dict:
     """
     Executes the generated code and runs the test script.
     """
-    print("Executing tests...")
+    print("---EXECUTING TESTS---")
     test_result = run_tests(state['target'])
     print(f"Test output:\n{test_result}")
     
@@ -109,6 +120,7 @@ def decision_maker(state: AgentState) -> str:
     """
     Decides whether to retry, self-correct, or finish.
     """
+    print("---MAKING DECISION---")
     test_output = state['messages'][-1].content
     if "Test Passed" in test_output:
         print("Test passed! Finalizing solution.")
@@ -139,7 +151,7 @@ workflow.add_edge("generate_code", "execute_tests")
 workflow.add_edge("execute_tests", "decide")
 workflow.add_conditional_edges(
     "decide",
-    lambda state: state['messages'][-1].content,
+    decision_maker,
     {
         "self-correct": "plan",
         "finish": END,
