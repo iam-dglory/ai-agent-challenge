@@ -89,9 +89,6 @@ def code_generator(state: AgentState) -> dict:
     - You can use libraries like pandas, re, and PyMuPDF (fitz).
     - You should handle potential errors with a try-except block.
 
-    Plan:
-    {plan}
-
     Write the complete and correct Python code.
     """
     
