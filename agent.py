@@ -1,78 +1,169 @@
-import importlib.util
-import pandas as pd
-from pathlib import Path
+import os
+import shutil
+import subprocess
+from typing import TypedDict, Annotated, List
+from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
 
-def write_icici_parser():
-    parser_code = '''import pdfplumber
-import pandas as pd
+# Load environment variables
+load_dotenv()
+os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY") # Or use Gemini API key
 
-def parse(pdf_path: str) -> pd.DataFrame:
-    rows = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text:
-                continue
-            lines = text.split("\\n")
-            for line in lines:
-                # split by spaces (simplest approach, customize if needed)
-                row = line.split()
-                if len(row) < 6:
-                    row += [""] * (6 - len(row))
-                elif len(row) > 6:
-                    row = row[:6]
-                rows.append(row)
-    df = pd.DataFrame(rows, columns=["Date","Narration","Ref No","Debit","Credit","Balance"])
-    return df
-'''
-    parser_file = Path("custom_parsers/icici_parser.py")
-    parser_file.write_text(parser_code)
-    print(f"✅ Wrote parser at {parser_file}")
+# Define the graph state
+class AgentState(TypedDict):
+    messages: Annotated[List[HumanMessage], lambda x: x]
+    code: str
+    target: str
+    attempts: int
 
-def run_test(target: str) -> bool:
-    # define paths
-    repo_root = Path(__file__).parent
-    pdf_path = repo_root / "data" / target / f"{target}_sample.pdf"
-    csv_path = repo_root / "data" / target / f"{target}_sample.csv"
+# Define the LLM
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+
+# The agent's tools
+def run_tests(target: str) -> str:
+    """Runs the test script for the specified bank parser."""
+    try:
+        result = subprocess.run(
+            ["python", f"tests/test_{target}.py"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        return e.stderr
+
+# Define the nodes of the graph
+def plan_generator(state: AgentState) -> dict:
+    """
+    Generates a plan for the coding agent.
+    """
+    plan_prompt = f"""
+    You are an expert coding agent tasked with writing a Python parser for a bank statement.
+    The goal is to create a function `parse(pdf_path)` inside `custom_parsers/{state['target']}_parser.py`
+    that takes a PDF file path and returns a pandas DataFrame with the same schema as
+    `data/{state['target']}/{state['target']}_sample.csv`.
+    The agent must:
+    1. Read the PDF content.
+    2. Use regular expressions or other methods to extract transaction data.
+    3. Construct a pandas DataFrame from the extracted data.
+    4. Return the DataFrame.
+
+    Based on the previous attempts (if any) and the error message provided, create a plan
+    to generate the correct code.
+    Previous attempts: {state['attempts']}
+    Last error: {state['messages'][-1].content if state['attempts'] > 0 else "None"}
+
+    Your plan should be concise and actionable for the code generator.
+    """
     
-    # dynamic import
-    parser_path = repo_root / "custom_parsers" / f"{target}_parser.py"
-    spec = importlib.util.spec_from_file_location(f"{target}_parser", parser_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    response = llm.invoke([HumanMessage(content=plan_prompt)])
+    return {"messages": [response]}
+
+def code_generator(state: AgentState) -> dict:
+    """
+    Generates the Python code for the parser based on the plan.
+    """
+    plan = state['messages'][-1].content
+    code_prompt = f"""
+    You are an expert Python programmer. Your task is to write the code for a bank statement parser
+    based on the following plan and context.
+
+    Context:
+    - The parser must be in a file named `custom_parsers/{state['target']}_parser.py`.
+    - The main function must be `parse(pdf_path: str) -> pd.DataFrame`.
+    - The output DataFrame must match the schema of the CSV file in `data/{state['target']}/`.
+    - You can use libraries like pandas, re, and PyMuPDF (fitz).
+    - You should handle potential errors with a try-except block.
+
+    Plan:
+    {plan}
+
+    Write the complete and correct Python code.
+    """
     
-    print("Looking for PDF at:", pdf_path)
+    response = llm.invoke([HumanMessage(content=code_prompt)])
+    code = response.content
     
-    df_pdf = mod.parse(str(pdf_path))
-    df_csv = pd.read_csv(csv_path)
+    # Save the generated code to the file
+    file_path = f"custom_parsers/{state['target']}_parser.py"
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w") as f:
+        f.write(code)
+    
+    return {"messages": [response], "code": code}
 
-    # normalize whitespace
-    df_pdf = df_pdf.applymap(lambda x: str(x).strip() if pd.notnull(x) else x)
-    df_csv = df_csv.applymap(lambda x: str(x).strip() if pd.notnull(x) else x)
+def execute_and_test(state: AgentState) -> dict:
+    """
+    Executes the generated code and runs the test script.
+    """
+    print("Executing tests...")
+    test_result = run_tests(state['target'])
+    print(f"Test output:\n{test_result}")
+    
+    return {"messages": [ToolMessage(content=test_result, tool_call_id="run_tests")]}
 
-    if df_pdf.equals(df_csv):
-        print("🎉 Test passed! Parser matches CSV.")
-        return True
-    else:
-        print("❌ Test failed! Parser output != CSV.")
-        # optional: print differences
-        print(df_pdf.compare(df_csv))
-        return False
+def decision_maker(state: AgentState) -> str:
+    """
+    Decides whether to retry, self-correct, or finish.
+    """
+    test_output = state['messages'][-1].content
+    if "Test Passed" in test_output:
+        print("Test passed! Finalizing solution.")
+        return "finish"
+    
+    state['attempts'] += 1
+    if state['attempts'] >= 3:
+        print("Maximum correction attempts reached. Exiting.")
+        return "fail"
+    
+    print("Test failed. Retrying with self-correction...")
+    return "self-correct"
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, help="Bank name target")
-    args = parser.parse_args()
-    target = args.target.lower()
+# Build the graph
+workflow = StateGraph(AgentState)
 
-    print(f"Attempt 1/3 for {target}")
-    write_icici_parser()
-    success = run_test(target)
-    if success:
-        print("✅ Success!")
-    else:
-        print("❌ Failed!")
+workflow.add_node("plan", plan_generator)
+workflow.add_node("generate_code", code_generator)
+workflow.add_node("execute_tests", execute_and_test)
+workflow.add_node("decide", decision_maker)
 
+# Set up the entry point
+workflow.set_entry_point("plan")
+
+# Add edges and conditional edges
+workflow.add_edge("plan", "generate_code")
+workflow.add_edge("generate_code", "execute_tests")
+workflow.add_edge("execute_tests", "decide")
+workflow.add_conditional_edges(
+    "decide",
+    lambda state: state['messages'][-1].content,
+    {
+        "self-correct": "plan",
+        "finish": END,
+        "fail": END
+    }
+)
+
+app = workflow.compile()
+
+# Main CLI entry point
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Agent-as-Coder Challenge CLI")
+    parser.add_argument("--target", required=True, help="The target bank for the parser (e.g., icici)")
+    args = parser.parse_args()
+
+    # Initial state
+    initial_state = {
+        "messages": [HumanMessage(content=f"Write a parser for the '{args.target}' bank.")],
+        "code": "",
+        "target": args.target,
+        "attempts": 0
+    }
+
+    # Run the agent
+    for step in app.stream(initial_state):
+        pass
