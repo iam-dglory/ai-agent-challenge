@@ -18,7 +18,7 @@ if os.getenv("GROQ_API_KEY"):
     llm = ChatGroq(model="llama3-70b-8192", temperature=0.0)
 elif os.getenv("OPENAI_API_KEY"):
     from langchain_openai import ChatOpenAI
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+    llm = ChatGroq(model="llama3-70b-8192", temperature=0.0)
 else:
     raise ValueError("No API key found. Please set GROQ_API_KEY or OPENAI_API_KEY in .env.")
 
