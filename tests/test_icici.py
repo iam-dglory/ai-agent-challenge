@@ -1,28 +1,27 @@
+import os
+import sys
 import pandas as pd
-import custom_parsers.icici_parser as icici_parser
+import pytest
+
+# Add project's root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from custom_parsers.icici_parser import parse
 
 def test_parser():
-    """Test the generated parser against the ground truth CSV."""
-    pdf_path = "data/icici/icici_sample.pdf"
-    csv_path = "data/icici/icici_sample.csv"
+    """
+    Tests if the parser for ICICI bank statements works correctly.
+    """
+    # Relative paths
+    pdf_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'icici', 'icici_sample.pdf')
+    expected_csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'icici', 'icici_sample.csv')
 
-    try:
-        # Load the ground truth CSV
-        expected_df = pd.read_csv(csv_path)
+    # Parse the PDF
+    parsed_df = parse(pdf_path)
 
-        # Parse the PDF using the agent-generated parser
-        parsed_df = icici_parser.parse(pdf_path)
+    # Read the expected data from the CSV
+    expected_df = pd.read_csv(expected_csv_path)
+    expected_df['Date'] = pd.to_datetime(expected_df['Date'], format='%d-%m-%Y')
 
-        if parsed_df is not None and parsed_df.equals(expected_df):
-            print("Test Passed: The generated parser works correctly!")
-            return True
-        else:
-            print("Test Failed: The parsed DataFrame does not match the expected CSV.")
-            return False
-            
-    except Exception as e:
-        print(f"Test Failed with an exception: {e}")
-        return False
-
-if __name__ == "__main__":
-    test_parser()
+    # Compare
+    pd.testing.assert_frame_equal(parsed_df, expected_df, check_dtype=False)
