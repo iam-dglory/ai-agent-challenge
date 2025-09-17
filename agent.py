@@ -15,10 +15,15 @@ load_dotenv()
 # LLM setup (uses Groq or OpenAI)
 if os.getenv("GROQ_API_KEY"):
     from langchain_groq import ChatGroq
-    llm = ChatGroq(model="llama3-70b-8192", temperature=0.0)
+    try:
+        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.0)
+    except Exception:
+        # Fallback to a smaller supported model
+        llm = ChatGroq(model="llama3-8b-8192", temperature=0.0)
+        print("Warning: Fell back to llama3-8b-8192. Check Groq docs for latest models.")
 elif os.getenv("OPENAI_API_KEY"):
     from langchain_openai import ChatOpenAI
-    llm = ChatGroq(model="llama3-70b-8192", temperature=0.0)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
 else:
     raise ValueError("No API key found. Please set GROQ_API_KEY or OPENAI_API_KEY in .env.")
 
@@ -130,13 +135,19 @@ if __name__ == "__main__":
     csv_path = os.path.join("data", args.target, f"{args.target}_sample.csv")
     pdf_text = ""
     if os.path.exists(pdf_path):
-        with fitz.open(pdf_path) as doc:
-            for page in doc:
-                pdf_text += page.get_text() + "\n"
+        try:
+            with fitz.open(pdf_path) as doc:
+                for page in doc:
+                    pdf_text += page.get_text() + "\n"
+        except Exception as e:
+            print(f"Warning: Could not extract PDF text: {e}")
     csv_text = ""
     if os.path.exists(csv_path):
-        expected_df = pd.read_csv(csv_path)
-        csv_text = expected_df.to_string(index=False)
+        try:
+            expected_df = pd.read_csv(csv_path)
+            csv_text = expected_df.to_string(index=False)
+        except Exception as e:
+            print(f"Warning: Could not load CSV: {e}")
 
     # Initial state
     initial_message = HumanMessage(content=f"Write a custom parser for {args.target} bank statement.\nSample PDF extracted text:\n{pdf_text}\n\nExpected output DataFrame (as string):\n{csv_text}")
