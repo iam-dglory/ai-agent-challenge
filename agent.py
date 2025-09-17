@@ -3,7 +3,7 @@ import subprocess
 import operator
 import pandas as pd
 import fitz  # PyMuPDF
-import sys  # Added for sys.executable
+import sys  # For sys.executable
 from typing import TypedDict, Annotated, List, Union
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
@@ -35,14 +35,18 @@ class AgentState(TypedDict):
     attempts: int
     decision: str
 
-# Tool to run tests (Updated to use python -m pytest for Windows compatibility)
+# Tool to run tests (Fixed for Windows: Use python -m pytest)
 def run_tests(target: str) -> str:
     """
     Runs pytest for the specified bank parser.
     """
+    test_file = f"tests/test_{target}.py"
+    if not os.path.exists(test_file):
+        return f"Test Failed: Test file {test_file} not found."
     try:
-        # Use sys.executable to run pytest as module, avoiding PATH issues
-        command = [sys.executable, "-m", "pytest", f"tests/test_{target}.py", "-v"]
+        # Use sys.executable to run as module, print command for debug
+        command = [sys.executable, "-m", "pytest", test_file, "-v"]
+        print(f"Running command: {' '.join(command)}")  # Debug print
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode == 0:
             return "Test Passed"
@@ -51,7 +55,7 @@ def run_tests(target: str) -> str:
     except Exception as e:
         return f"Test Failed with exception: {str(e)}"
 
-# Nodes (rest unchanged)
+# Nodes (unchanged from previous)
 def plan_generator(state: AgentState) -> dict:
     print("---PLANNING---")
     plan_prompt = f"""
