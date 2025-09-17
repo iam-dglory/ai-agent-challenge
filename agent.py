@@ -1,178 +1,153 @@
 import os
-import shutil
 import subprocess
 import operator
 import pandas as pd
-import re
-import fitz # PyMuPDF
+import fitz  # PyMuPDF
+import sys
 from typing import TypedDict, Annotated, List, Union
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from dotenv import load_dotenv
+import argparse
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Check for both Groq and OpenAI API keys to provide flexibility
+# LLM setup (uses Groq or OpenAI)
 if os.getenv("GROQ_API_KEY"):
     from langchain_groq import ChatGroq
-    llm = ChatGroq(model="mixtral-8x7b-32768", temperature=0.0)
+    llm = ChatGroq(model="llama3-70b-8192", temperature=0.0)
 elif os.getenv("OPENAI_API_KEY"):
     from langchain_openai import ChatOpenAI
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
 else:
-    raise ValueError("No API key found. Please set either GROQ_API_KEY or OPENAI_API_KEY in your .env file.")
+    raise ValueError("No API key found. Please set GROQ_API_KEY or OPENAI_API_KEY in .env.")
 
-# Define the graph state with a correct reducer for messages
+# State definition
 class AgentState(TypedDict):
     messages: Annotated[List[Union[HumanMessage, AIMessage, ToolMessage]], operator.add]
     code: str
     target: str
     attempts: int
+    decision: str
 
-# Define the agent's tools
+# Tool to run tests
 def run_tests(target: str) -> str:
-    """Runs the test script for the specified bank parser."""
+    """
+    Runs pytest for the specified bank parser.
+    """
     try:
-        result = subprocess.run(
-            ["python", f"tests/test_{target}.py"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        return e.stderr
+        command = ["pytest", f"tests/test_{target}.py", "-v"]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode == 0:
+            return "Test Passed"
+        else:
+            return f"Test Failed. Output:\n{result.stdout}\nError:\n{result.stderr}"
+    except Exception as e:
+        return f"Test Failed with exception: {str(e)}"
 
-# Define the nodes of the graph
+# Nodes
 def plan_generator(state: AgentState) -> dict:
-    """
-    Generates a plan for the coding agent.
-    """
     print("---PLANNING---")
     plan_prompt = f"""
-    You are an expert coding agent tasked with writing a Python parser for a bank statement.
-    The goal is to create a function `parse(pdf_path)` inside `custom_parsers/{state['target']}_parser.py`
-    that takes a PDF file path and returns a pandas DataFrame with the same schema as
-    `data/{state['target']}/{state['target']}_sample.csv`.
-    The agent must:
-    1. Read the PDF content.
-    2. Use regular expressions or other methods to extract transaction data.
-    3. Construct a pandas DataFrame from the extracted data.
-    4. Return the DataFrame.
-
-    Based on the previous attempts (if any) and the error message provided, create a plan
-    to generate the correct code.
+    You are an expert coding agent for writing bank statement parsers.
+    Analyze the sample PDF text and expected CSV to plan how to parse the PDF into the exact DF.
+    Focus on handling table structure, empty fields, data types, and matching the schema.
+    If previous attempts failed, use the last test output to plan fixes (e.g., change Camelot flavor, clean rows, handle NaNs).
     Previous attempts: {state['attempts']}
-    Last error: {state['messages'][-1].content if state['attempts'] > 0 else "None"}
-
-    Your plan should be concise and actionable for the code generator.
+    Last test output: {state['messages'][-1].content if state['attempts'] > 0 else 'None'}
+    Provide a concise, actionable plan for generating the code (e.g., 'Use Camelot with lattice flavor, concat tables, set columns, convert types, handle NaNs').
     """
-    
-    response = llm.invoke([HumanMessage(content=plan_prompt)])
+    response = llm.invoke(state['messages'] + [HumanMessage(content=plan_prompt)])
     return {"messages": [response]}
 
 def code_generator(state: AgentState) -> dict:
-    """
-    Generates the Python code for the parser based on the plan.
-    """
     print("---GENERATING CODE---")
-    plan = state['messages'][-1].content
     code_prompt = f"""
-    You are an expert Python programmer. Your task is to write the code for a bank statement parser
-    based on the following plan and context.
-
-    Context:
-    - The parser must be in a file named `custom_parsers/{state['target']}_parser.py`.
-    - The main function must be `parse(pdf_path: str) -> pd.DataFrame`.
-    - The output DataFrame must match the schema of the CSV file in `data/{state['target']}/`.
-    - You can use libraries like pandas, re, and PyMuPDF (fitz).
-    - You should handle potential errors with a try-except block.
-
-    Write the complete and correct Python code.
+    You are an expert Python coder.
+    Follow this plan exactly: {state['messages'][-1].content}
+    Write the full code for custom_parsers/{state['target']}_parser.py.
+    It must define def parse(pdf_path: str) -> pd.DataFrame:
+    - Import necessary libs (pandas, camelot, os, fitz if needed).
+    - Handle file not found.
+    - Extract tables from PDF.
+    - Clean DF to match schema: Date (datetime), Description (str), Debit Amt (float or NaN), Credit Amt (float or NaN), Balance (float).
+    - Ensure NaN for empty Debit/Credit.
+    - Do not add extra rows/columns.
+    Output only the Python code, no explanations.
     """
-    
-    response = llm.invoke([HumanMessage(content=code_prompt)])
-    code = response.content
-    
-    # Save the generated code to the file
+    response = llm.invoke(state['messages'] + [HumanMessage(content=code_prompt)])
+    code = response.content.strip()
     file_path = f"custom_parsers/{state['target']}_parser.py"
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w") as f:
         f.write(code)
-    
-    return {"messages": [response], "code": code}
+    return {"messages": [AIMessage(content="Code generated.")], "code": code}
 
 def execute_and_test(state: AgentState) -> dict:
-    """
-    Executes the generated code and runs the test script.
-    """
     print("---EXECUTING TESTS---")
     test_result = run_tests(state['target'])
     print(f"Test output:\n{test_result}")
-    
     return {"messages": [ToolMessage(content=test_result, tool_call_id="run_tests")]}
 
-def decision_maker(state: AgentState) -> str:
-    """
-    Decides whether to retry, self-correct, or finish.
-    """
+def decision_maker(state: AgentState) -> dict:
     print("---MAKING DECISION---")
     test_output = state['messages'][-1].content
     if "Test Passed" in test_output:
         print("Test passed! Finalizing solution.")
-        return "finish"
-    
+        return {"decision": "finish"}
     state['attempts'] += 1
     if state['attempts'] >= 3:
-        print("Maximum correction attempts reached. Exiting.")
-        return "fail"
-    
+        print("Maximum attempts reached. Exiting.")
+        return {"decision": "fail"}
     print("Test failed. Retrying with self-correction...")
-    return "self-correct"
+    return {"decision": "self-correct"}
 
-# Build the graph
+# Graph setup
 workflow = StateGraph(AgentState)
-
 workflow.add_node("plan", plan_generator)
 workflow.add_node("generate_code", code_generator)
 workflow.add_node("execute_tests", execute_and_test)
 workflow.add_node("decide", decision_maker)
-
-# Set up the entry point
 workflow.set_entry_point("plan")
-
-# Add edges and conditional edges
 workflow.add_edge("plan", "generate_code")
 workflow.add_edge("generate_code", "execute_tests")
 workflow.add_edge("execute_tests", "decide")
 workflow.add_conditional_edges(
     "decide",
-    decision_maker,
-    {
-        "self-correct": "plan",
-        "finish": END,
-        "fail": END
-    }
+    lambda state: state['decision'],
+    {"self-correct": "plan", "finish": END, "fail": END}
 )
-
 app = workflow.compile()
 
-# Main CLI entry point
+# CLI entry
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Agent-as-Coder Challenge CLI")
-    parser.add_argument("--target", required=True, help="The target bank for the parser (e.g., icici)")
+    parser = argparse.ArgumentParser(description="AI Agent Challenge CLI")
+    parser.add_argument("--target", required=True, help="Target bank (e.g., icici)")
     args = parser.parse_args()
 
+    # Load sample data for prompt
+    pdf_path = os.path.join("data", args.target, f"{args.target}_sample.pdf")
+    csv_path = os.path.join("data", args.target, f"{args.target}_sample.csv")
+    pdf_text = ""
+    if os.path.exists(pdf_path):
+        with fitz.open(pdf_path) as doc:
+            for page in doc:
+                pdf_text += page.get_text() + "\n"
+    csv_text = ""
+    if os.path.exists(csv_path):
+        expected_df = pd.read_csv(csv_path)
+        csv_text = expected_df.to_string(index=False)
+
     # Initial state
+    initial_message = HumanMessage(content=f"Write a custom parser for {args.target} bank statement.\nSample PDF extracted text:\n{pdf_text}\n\nExpected output DataFrame (as string):\n{csv_text}")
     initial_state = {
-        "messages": [HumanMessage(content=f"Write a parser for the '{args.target}' bank.")],
+        "messages": [initial_message],
         "code": "",
         "target": args.target,
-        "attempts": 0
+        "attempts": 0,
+        "decision": ""
     }
 
-    # Run the agent
+    # Run the graph
     for step in app.stream(initial_state):
         pass
