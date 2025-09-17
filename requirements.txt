@@ -1,4 +1,8 @@
+camelot-py[base]
+langchain-groq
+langchain-openai
+langgraph
 pandas
-pdfplumber
+pymupdf
 pytest
-
+python-dotenv
